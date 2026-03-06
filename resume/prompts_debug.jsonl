@@ -1,0 +1,5 @@
+{"image_path": "Bedroom/Bedroom_scene_0115_A2.jpg", "category": "Bedroom", "scene_id": "0115", "variant": "A", "view": "2", "operation": "Add", "prompt": "Add a small round glass coffee table in front of the armchair"}
+{"image_path": "Bedroom/Bedroom_scene_0282_B2.jpg", "category": "Bedroom", "scene_id": "0282", "variant": "B", "view": "2", "operation": "Replace", "prompt": "Replace the ceiling light fixture with a modern pendant light"}
+{"image_path": "Bedroom/Bedroom_scene_0026_B2.jpg", "category": "Bedroom", "scene_id": "0026", "variant": "B", "view": "2", "operation": "Delete", "prompt": "Remove the wall-mounted TV next to the window"}
+{"image_path": "Bedroom/Bedroom_scene_0251_B2.jpg", "category": "Bedroom", "scene_id": "0251", "variant": "B", "view": "2", "operation": "Add", "prompt": "Add a small wooden nightstand with a lamp next to the bed on the right"}
+{"image_path": "Bedroom/Bedroom_scene_0229_B2.jpg", "category": "Bedroom", "scene_id": "0229", "variant": "B", "view": "2", "operation": "Delete", "prompt": "Remove the black table lamp on the left nightstand"}
