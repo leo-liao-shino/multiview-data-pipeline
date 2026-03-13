@@ -1,13 +1,15 @@
 {
   "jsonl": "/workspace/multiview-data-pipeline/resume/prompts_debug.jsonl",
-  "dataset_root": "/workspace/data/all_multiview_datasets",
-  "output_dir": "/workspace/data/qwen_test_outputs",
+  "dataset_root": "/workspace/data/all-multiview-datasets",
+  "output_dir": "/workspace/data/qwen-test-outputs",
   "n": 5,
   "seed": 42,
   "steps": 20,
   "cfg": 4.0,
-  "model": "Qwen/Qwen-Image-Edit-2509",
-  "precision": "int8",
+  "model": "Qwen/Qwen-Image-Edit-2511",
+  "preserve_untouched": true,
+  "preserve_suffix": " Only edit the requested target. Keep all other objects, textures, lighting, geometry, and background unchanged.",
+  "precision": "bf16",
   "wandb": false,
   "wandb_project": "qwen-furniture-edit"
 }

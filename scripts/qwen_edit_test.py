@@ -1,5 +1,5 @@
 """
-Test Qwen-Image-Edit-2509 on a sample of image-instruction pairs.
+Test Qwen-Image-Edit-2511 on a sample of image-instruction pairs.
 
 Usage:
     conda activate data_process
@@ -20,7 +20,7 @@ import os
 import json
 import random
 import argparse
-import inspect
+import math
 from pathlib import Path
 
 import torch
@@ -35,14 +35,20 @@ from config_utils import load_json_config, pick_value
 # Defaults
 # ---------------------------------------------------------------------------
 DEFAULT_JSONL        = "/workspace/multiview-data-pipeline/resume/prompts_debug.jsonl"
-DEFAULT_DATASET_ROOT = "/workspace/data/all_multiview_datasets"
-DEFAULT_OUTPUT_DIR   = "/workspace/data/qwen_test_outputs"
+DEFAULT_DATASET_ROOT = "/workspace/data/all-multiview-datasets"
+DEFAULT_OUTPUT_DIR   = "/workspace/data/qwen-test-outputs"
 DEFAULT_N            = 5
 DEFAULT_SEED         = 42
 DEFAULT_STEPS        = 20
 DEFAULT_CFG          = 4.0   # true_cfg_scale recommended in model card
-DEFAULT_MODEL        = "Qwen/Qwen-Image-Edit-2509"
-DEFAULT_CONFIG_PATH  = Path(__file__).resolve().parents[1] / "config" / "qwen_edit_test.json"
+DEFAULT_MODEL        = "Qwen/Qwen-Image-Edit-2511"
+DEFAULT_MATCH_INPUT_MAX_MEGAPIXELS = 7  # safety cap when matching source resolution
+DEFAULT_PRESERVE_UNTOUCHED = True
+DEFAULT_PRESERVE_SUFFIX = (
+    " Only edit the requested target. Keep all other objects, textures, lighting, "
+    "geometry, and background unchanged."
+)
+DEFAULT_CONFIG_PATH  = Path(__file__).resolve().parents[1] / "config" / "qwen-edit-test.json"
 
 
 # ---------------------------------------------------------------------------
@@ -96,6 +102,22 @@ def make_side_by_side(before: Image.Image, after: Image.Image,
     return canvas
 
 
+def cap_resolution_to_megapixels(width: int,
+                                 height: int,
+                                 max_megapixels: float,
+                                 multiple_of: int = 32) -> tuple[int, int, bool]:
+    """Cap resolution by area while preserving aspect ratio and model divisibility."""
+    area = width * height
+    max_area = int(max_megapixels * 1_000_000)
+    if area <= max_area:
+        return width, height, False
+
+    scale = math.sqrt(max_area / float(area))
+    capped_w = max(multiple_of, int(width * scale) // multiple_of * multiple_of)
+    capped_h = max(multiple_of, int(height * scale) // multiple_of * multiple_of)
+    return capped_w, capped_h, True
+
+
 def run_pair(pipe: QwenImageEditPlusPipeline,
              record: dict,
              dataset_root: str,
@@ -105,14 +127,42 @@ def run_pair(pipe: QwenImageEditPlusPipeline,
              seed: int,
              width: int | None,
              height: int | None,
-             supports_resolution_kwargs: bool) -> dict:
+             match_input_resolution: bool,
+             max_megapixels: float | None,
+             preserve_untouched: bool,
+             preserve_suffix: str) -> dict:
     img_path = Path(dataset_root) / record["image_path"]
     if not img_path.exists():
         return {**record, "status": "missing_image", "output_path": None}
 
     image = Image.open(img_path).convert("RGB")
     prompt = record["prompt"]
+    if preserve_untouched:
+        prompt = f"{prompt.rstrip('. ')}.{preserve_suffix}"
     operation = record["operation"]
+    target_width = width
+    target_height = height
+    if target_width is None and target_height is None and match_input_resolution:
+        target_width = image.width
+        target_height = image.height
+
+    effective_max_megapixels = max_megapixels
+    if effective_max_megapixels is None and target_width is not None and target_height is not None and match_input_resolution:
+        effective_max_megapixels = DEFAULT_MATCH_INPUT_MAX_MEGAPIXELS
+
+    resolution_capped = False
+    if effective_max_megapixels is not None and target_width is not None and target_height is not None:
+        orig_w, orig_h = target_width, target_height
+        target_width, target_height, resolution_capped = cap_resolution_to_megapixels(
+            target_width,
+            target_height,
+            effective_max_megapixels,
+        )
+        if resolution_capped:
+            print(
+                f"  resolution capped: {orig_w}x{orig_h} -> {target_width}x{target_height} "
+                f"(max {effective_max_megapixels:.2f} MP)"
+            )
 
     inputs = {
         "image": [image],
@@ -124,17 +174,30 @@ def run_pair(pipe: QwenImageEditPlusPipeline,
         "guidance_scale": 1.0,
         "num_images_per_prompt": 1,
     }
+    if target_width is not None and target_height is not None:
+        inputs["width"] = target_width
+        inputs["height"] = target_height
 
-    if supports_resolution_kwargs:
-        if width is not None:
-            inputs["width"] = width
-        if height is not None:
-            inputs["height"] = height
+    oom_fallback_used = False
+    try:
+        with torch.inference_mode():
+            output = pipe(**inputs)
+    except torch.OutOfMemoryError:
+        torch.cuda.empty_cache()
+        gc.collect()
+        if "width" in inputs and "height" in inputs:
+            print("  OOM at requested resolution; retrying with pipeline default resolution...")
+            inputs.pop("width", None)
+            inputs.pop("height", None)
+            with torch.inference_mode():
+                output = pipe(**inputs)
+            target_width = None
+            target_height = None
+            oom_fallback_used = True
+        else:
+            raise
 
-    with torch.inference_mode():
-        output = pipe(**inputs)
-
-    edited: Image.Image = output[0][0]  # type: ignore[index]
+    edited: Image.Image = output.images[0] # type: ignore
 
     # Free GPU residuals before next iteration
     torch.cuda.empty_cache()
@@ -145,14 +208,21 @@ def run_pair(pipe: QwenImageEditPlusPipeline,
     edited_path  = output_dir / f"{stem}_edited.jpg"
     compare_path = output_dir / f"{stem}_compare.jpg"
 
-    edited.save(edited_path, quality=95)
-    make_side_by_side(image, edited, prompt, operation).save(compare_path, quality=95)
+    edited.save(edited_path, quality=100)
+    make_side_by_side(image, edited, prompt, operation).save(compare_path, quality=100)
 
     return {
         **record,
         "status": "ok",
         "output_path": str(edited_path),
         "compare_path": str(compare_path),
+        "requested_width": target_width,
+        "requested_height": target_height,
+        "output_width": edited.width,
+        "output_height": edited.height,
+        "resolution_capped": resolution_capped,
+        "max_megapixels": effective_max_megapixels,
+        "oom_fallback_used": oom_fallback_used,
     }
 
 
@@ -161,8 +231,8 @@ def run_pair(pipe: QwenImageEditPlusPipeline,
 # ---------------------------------------------------------------------------
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Test Qwen-Image-Edit on sample pairs")
-    p.add_argument("--config",        default=None,                     help="Path to JSON config file (default: config/qwen_edit_test.json)")
+    p = argparse.ArgumentParser(description="Test Qwen-Image-Edit-2511 on sample pairs")
+    p.add_argument("--config",        default=None,                     help="Path to JSON config file (default: config/qwen-edit-test.json)")
     p.add_argument("--jsonl",         default=None,                     help="Path to prompts JSONL")
     p.add_argument("--dataset-root",  default=None,                     help="Dataset root directory")
     p.add_argument("--output-dir",    default=None,                     help="Where to save outputs")
@@ -170,9 +240,17 @@ def parse_args():
     p.add_argument("--seed",          type=int,   default=None,         help="Random seed")
     p.add_argument("--steps",         type=int,   default=None,         help="Inference steps (default: 20)")
     p.add_argument("--cfg",           type=float, default=None,         help="true_cfg_scale")
+    p.add_argument("--width",         type=int,   default=None,         help="Output width for generation (defaults to input image width)")
+    p.add_argument("--height",        type=int,   default=None,         help="Output height for generation (defaults to input image height)")
+    p.add_argument("--match-input-resolution", action="store_true", default=None,
+                   help="Generate at each source image resolution (slower, more VRAM)")
+    p.add_argument("--max-megapixels", type=float, default=None,
+                   help="Cap generation area in megapixels (recommended with --match-input-resolution)")
     p.add_argument("--model",         default=None,                     help="Model ID")
-    p.add_argument("--width",         type=int,   default=None,         help="Native generation width (if supported by pipeline)")
-    p.add_argument("--height",        type=int,   default=None,         help="Native generation height (if supported by pipeline)")
+    p.add_argument("--preserve-untouched", action="store_true", default=None,
+                   help="Append instruction to preserve all non-target regions")
+    p.add_argument("--preserve-suffix", default=None,
+                   help="Custom suffix used when --preserve-untouched is enabled")
     p.add_argument("--precision",     choices=["int8", "bf16"], default=None,
                    help="Precision mode: int8 or bf16")
     prec = p.add_mutually_exclusive_group()
@@ -199,29 +277,51 @@ def parse_args():
     args.seed = int(pick_value(args.seed, config, "seed", DEFAULT_SEED))
     args.steps = int(pick_value(args.steps, config, "steps", DEFAULT_STEPS))
     args.cfg = float(pick_value(args.cfg, config, "cfg", DEFAULT_CFG))
-    args.model = pick_value(args.model, config, "model", DEFAULT_MODEL)
     args.width = pick_value(args.width, config, "width", None)
     args.height = pick_value(args.height, config, "height", None)
+    args.match_input_resolution = bool(
+        pick_value(args.match_input_resolution, config, "match_input_resolution", False)
+    )
+    args.max_megapixels = pick_value(args.max_megapixels, config, "max_megapixels", None)
+    args.model = pick_value(args.model, config, "model", DEFAULT_MODEL)
+    args.preserve_untouched = bool(
+        pick_value(args.preserve_untouched, config, "preserve_untouched", DEFAULT_PRESERVE_UNTOUCHED)
+    )
+    args.preserve_suffix = str(
+        pick_value(args.preserve_suffix, config, "preserve_suffix", DEFAULT_PRESERVE_SUFFIX)
+    )
     args.precision = pick_value(args.precision, config, "precision", "int8")
     args.wandb = bool(pick_value(args.wandb, config, "wandb", False))
     args.wandb_project = pick_value(args.wandb_project, config, "wandb_project", "qwen-furniture-edit")
 
-    if args.width is not None:
-        args.width = int(args.width)
-        if args.width <= 0:
-            p.error("width must be a positive integer")
-    if args.height is not None:
-        args.height = int(args.height)
-        if args.height <= 0:
-            p.error("height must be a positive integer")
-    if (args.width is None) != (args.height is None):
-        p.error("set both width and height together, or neither")
-
     if args.precision not in {"int8", "bf16"}:
         p.error("precision must be one of: int8, bf16")
+    if (args.width is None) != (args.height is None):
+        p.error("--width and --height must be provided together")
+    if args.width is not None:
+        assert args.height is not None
+        args.width = int(args.width)
+        args.height = int(args.height)
+        if args.width <= 0 or args.height <= 0:
+            p.error("--width and --height must be positive integers")
+    if args.max_megapixels is not None:
+        args.max_megapixels = float(args.max_megapixels)
+        if args.max_megapixels <= 0:
+            p.error("--max-megapixels must be positive")
 
     if config_path.exists():
         print(f"Using config: {config_path}")
+    print(f"Preserve untouched regions: {args.preserve_untouched}")
+    if args.width is None and args.match_input_resolution:
+        print("Generation resolution: match each input image (runtime detected)")
+    elif args.width is None:
+        print("Generation resolution: pipeline default (~1MP, faster)")
+    else:
+        print(f"Generation resolution: {args.width}x{args.height}")
+    if args.max_megapixels is not None:
+        print(f"Max megapixels cap: {args.max_megapixels:.2f} MP")
+    elif args.match_input_resolution:
+        print(f"Max megapixels cap: auto {DEFAULT_MATCH_INPUT_MAX_MEGAPIXELS:.2f} MP")
 
     return args
 
@@ -244,13 +344,6 @@ def main():
     # print()
 
     pipe = load_pipeline(args.model, args.precision)
-    pipe_call_params = set(inspect.signature(pipe.__call__).parameters)
-    supports_resolution_kwargs = "width" in pipe_call_params and "height" in pipe_call_params
-    if args.width is not None:
-        if supports_resolution_kwargs:
-            print(f"Using native output size request: {args.width}x{args.height}")
-        else:
-            print("[WARN] This installed Qwen pipeline does not expose width/height in __call__; requested native resolution is ignored.")
 
     # Init W&B run if requested
     wb_run = None
@@ -273,7 +366,9 @@ def main():
             print(f"[{i}/{len(sample)}] {record['image_path']}")
             result = run_pair(pipe, record, args.dataset_root,
                               output_dir, args.steps, args.cfg, args.seed,
-                              args.width, args.height, supports_resolution_kwargs)
+                              args.width, args.height, args.match_input_resolution,
+                              args.max_megapixels,
+                              args.preserve_untouched, args.preserve_suffix)
             print(f"  → {result['status']}"
                   + (f"  saved: {result['output_path']}" if result["status"] == "ok" else ""))
             out_f.write(json.dumps(result) + "\n")
