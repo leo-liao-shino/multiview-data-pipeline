@@ -20,6 +20,7 @@ import os
 import json
 import random
 import argparse
+import inspect
 from pathlib import Path
 
 import torch
@@ -101,7 +102,10 @@ def run_pair(pipe: QwenImageEditPlusPipeline,
              output_dir: Path,
              steps: int,
              cfg: float,
-             seed: int) -> dict:
+             seed: int,
+             width: int | None,
+             height: int | None,
+             supports_resolution_kwargs: bool) -> dict:
     img_path = Path(dataset_root) / record["image_path"]
     if not img_path.exists():
         return {**record, "status": "missing_image", "output_path": None}
@@ -120,6 +124,12 @@ def run_pair(pipe: QwenImageEditPlusPipeline,
         "guidance_scale": 1.0,
         "num_images_per_prompt": 1,
     }
+
+    if supports_resolution_kwargs:
+        if width is not None:
+            inputs["width"] = width
+        if height is not None:
+            inputs["height"] = height
 
     with torch.inference_mode():
         output = pipe(**inputs)
@@ -161,6 +171,8 @@ def parse_args():
     p.add_argument("--steps",         type=int,   default=None,         help="Inference steps (default: 20)")
     p.add_argument("--cfg",           type=float, default=None,         help="true_cfg_scale")
     p.add_argument("--model",         default=None,                     help="Model ID")
+    p.add_argument("--width",         type=int,   default=None,         help="Native generation width (if supported by pipeline)")
+    p.add_argument("--height",        type=int,   default=None,         help="Native generation height (if supported by pipeline)")
     p.add_argument("--precision",     choices=["int8", "bf16"], default=None,
                    help="Precision mode: int8 or bf16")
     prec = p.add_mutually_exclusive_group()
@@ -188,9 +200,22 @@ def parse_args():
     args.steps = int(pick_value(args.steps, config, "steps", DEFAULT_STEPS))
     args.cfg = float(pick_value(args.cfg, config, "cfg", DEFAULT_CFG))
     args.model = pick_value(args.model, config, "model", DEFAULT_MODEL)
+    args.width = pick_value(args.width, config, "width", None)
+    args.height = pick_value(args.height, config, "height", None)
     args.precision = pick_value(args.precision, config, "precision", "int8")
     args.wandb = bool(pick_value(args.wandb, config, "wandb", False))
     args.wandb_project = pick_value(args.wandb_project, config, "wandb_project", "qwen-furniture-edit")
+
+    if args.width is not None:
+        args.width = int(args.width)
+        if args.width <= 0:
+            p.error("width must be a positive integer")
+    if args.height is not None:
+        args.height = int(args.height)
+        if args.height <= 0:
+            p.error("height must be a positive integer")
+    if (args.width is None) != (args.height is None):
+        p.error("set both width and height together, or neither")
 
     if args.precision not in {"int8", "bf16"}:
         p.error("precision must be one of: int8, bf16")
@@ -214,11 +239,18 @@ def main():
     sample = random.sample(records, min(args.n, len(records)))
 
     print(f"Selected {len(sample)} pairs (seed={args.seed}):")
-    for r in sample:
-        print(f"  [{r['operation']:7s}] {r['image_path']} — {r['prompt']}")
-    print()
+    # for r in sample:
+    #     print(f"  [{r['operation']:7s}] {r['image_path']} — {r['prompt']}")
+    # print()
 
     pipe = load_pipeline(args.model, args.precision)
+    pipe_call_params = set(inspect.signature(pipe.__call__).parameters)
+    supports_resolution_kwargs = "width" in pipe_call_params and "height" in pipe_call_params
+    if args.width is not None:
+        if supports_resolution_kwargs:
+            print(f"Using native output size request: {args.width}x{args.height}")
+        else:
+            print("[WARN] This installed Qwen pipeline does not expose width/height in __call__; requested native resolution is ignored.")
 
     # Init W&B run if requested
     wb_run = None
@@ -240,7 +272,8 @@ def main():
         for i, record in enumerate(sample, 1):
             print(f"[{i}/{len(sample)}] {record['image_path']}")
             result = run_pair(pipe, record, args.dataset_root,
-                              output_dir, args.steps, args.cfg, args.seed)
+                              output_dir, args.steps, args.cfg, args.seed,
+                              args.width, args.height, supports_resolution_kwargs)
             print(f"  → {result['status']}"
                   + (f"  saved: {result['output_path']}" if result["status"] == "ok" else ""))
             out_f.write(json.dumps(result) + "\n")

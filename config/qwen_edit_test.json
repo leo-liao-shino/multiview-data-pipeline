@@ -7,6 +7,8 @@
   "steps": 20,
   "cfg": 4.0,
   "model": "Qwen/Qwen-Image-Edit-2509",
+  "width": 1600,
+  "height": 1600,
   "precision": "int8",
   "wandb": false,
   "wandb_project": "qwen-furniture-edit"
