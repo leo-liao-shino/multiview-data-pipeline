@@ -1,0 +1,10 @@
+openai
+tqdm
+torch
+torchvision
+diffusers @ git+https://github.com/huggingface/diffusers
+transformers
+accelerate
+Pillow
+bitsandbytes
+wandb

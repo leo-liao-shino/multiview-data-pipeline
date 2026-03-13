@@ -2,9 +2,11 @@
 
 ## Getting Started
 
+Run `setup.sh` to setup conda env.
+
 ### Folder Structure
 ```
-/workspace/all_multiview_datasets
+/workspace/data/all_multiview_datasets
  |-LivingRoom
  |-Bedroom
  |-DiningRoom
@@ -29,11 +31,6 @@ Only `*_A2.jpg` and `*_B2.jpg` (furnished views) are used as input. `*_A1.jpg` a
 Uses GPT-4o vision to generate furniture-editing prompts (`Add`, `Delete`, or `Replace`) for each furnished room image. Operations are assigned in round-robin rotation (`Add → Delete → Replace → …`) across the image queue to ensure a balanced 1/3 distribution. Results are saved as a JSONL file.
 
 ### Requirements
-
-Use the `data_process` conda environment (Python + OpenAI package already installed):
-```bash
-conda activate data_process
-```
 
 Set your OpenAI API key:
 ```bash
@@ -60,8 +57,8 @@ python scripts/prompt_generating.py --debug --seed 42
 **Custom options:**
 ```bash
 python scripts/prompt_generating.py \
-    --dataset-root /workspace/all_multiview_datasets \
-    --output /workspace/data_processing/resume/prompts.jsonl \
+    --dataset-root /workspace/data/all_multiview_datasets \
+    --output /workspace/multiview-data-pipeline/resume/prompts.jsonl \
     --model gpt-4o \
     --views A2,B2 \
     --workers 4
