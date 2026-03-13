@@ -1,0 +1,18 @@
+{
+  "dataset_root": "/workspace/data/all_multiview_datasets",
+  "output": "/workspace/multiview-data-pipeline/resume/prompts.jsonl",
+  "model": "gpt-4o",
+  "views": ["A2", "B2"],
+  "operations": [
+    "MultiEdit",
+    "ColorChange",
+    "MaterialChange",
+    "Resize",
+    "LargeElement",
+    "Combination"
+  ],
+  "workers": 4,
+  "debug": false,
+  "debug_n": 10,
+  "seed": null
+}
