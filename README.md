@@ -97,3 +97,71 @@ Each line in `prompts.jsonl` is a JSON object:
 The script automatically skips images whose `image_path` already appears in the output JSONL. Re-running the script after an interruption will continue from where it left off, and the operation rotation resumes from the next position in sequence.
 
 > Debug mode does **not** support resume — it always starts from a blank file.
+
+## Image Editing (`scripts/qwen_edit_test.py`)
+
+Runs Qwen-Image-Edit-2509 on a sample of image-instruction pairs and saves edited images and side-by-side comparisons.
+
+### Usage
+
+```bash
+python scripts/qwen_edit_test.py [OPTIONS]
+```
+
+### Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--jsonl FILE` | `resume/prompts_debug.jsonl` | Prompts JSONL to sample from |
+| `--dataset-root DIR` | `/workspace/data/all_multiview_datasets` | Dataset root |
+| `--output-dir DIR` | `qwen_test_outputs/` | Where to save edited images |
+| `--n N` | `5` | Number of pairs to process |
+| `--seed N` | `42` | Random seed for sampling |
+| `--steps N` | `20` | Diffusion steps (20 = good quality/speed balance) |
+| `--cfg FLOAT` | `4.0` | `true_cfg_scale` |
+| `--model MODEL` | `Qwen/Qwen-Image-Edit-2509` | HuggingFace model ID |
+| `--int8` | ✓ (default) | 8-bit quantization: ~24 GB VRAM |
+| `--bf16` | — | Full bfloat16: ~47 GB VRAM, faster |
+| `--wandb` | off | Log compare images to Weights & Biases |
+| `--wandb-project NAME` | `qwen-furniture-edit` | W&B project name |
+
+### Examples
+
+```bash
+# Quick test, 5 pairs
+python scripts/qwen_edit_test.py --n 5 --seed 42
+
+# 10 pairs with W&B logging
+python scripts/qwen_edit_test.py --n 10 --seed 42 --wandb
+
+# Full bf16 (needs full 48 GB headroom)
+python scripts/qwen_edit_test.py --n 5 --bf16
+```
+
+### Outputs
+
+For each pair:
+- `{stem}_edited.jpg` — edited image (1248×832, model's fixed output resolution)
+- `{stem}_compare.jpg` — side-by-side before/after with operation label
+- `results.jsonl` — metadata log (appends across runs)
+
+### Notes
+
+- Model output is always **1248×832** regardless of input resolution. This is Qwen's fixed internal working resolution.
+- 8-bit quantization (`--int8`) reduces VRAM from ~47 GB to ~24 GB with minimal quality impact.
+- Steps=20 was found to be visually equivalent to the model card default of 40 at half the time (~3 min/image on A6000).
+
+---
+
+## Dataset Structure
+
+```
+all_multiview_datasets/
+  {Category}/
+    {Category}_scene_{NNNN}_{Variant}{View}.jpg
+```
+
+Example: `Bedroom/Bedroom_scene_0001_A2.jpg`
+
+- Only `A2` and `B2` views are processed (not `A1`/`B1`)
+- Categories: Bedroom, LivingRoom, DiningRoom, Kitchen, Outdoor, Balcony
