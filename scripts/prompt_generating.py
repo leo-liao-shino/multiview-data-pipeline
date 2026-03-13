@@ -58,6 +58,18 @@ Examples:
 {"operation": "Replace", "prompt": "Replace the wooden dresser with a sleek white built-in wardrobe"}
 """
 
+"""
+Add and delete is good. We need more data to do replace, especially for complex scenes with multiple editing.
+
+TODO for prompts
+1. Edit multiple objects in the same image
+2. Accuracy when the object is relatively large in the scene
+3. Accuracy of color (saturation) and material details
+4. Complex operations involving multiple objects
+5. Data volume for resizing
+6. Mask dilation
+"""
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
