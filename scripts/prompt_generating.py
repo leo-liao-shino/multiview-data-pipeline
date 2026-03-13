@@ -1,11 +1,15 @@
 """
-Generate Add/Delete/Replace furniture editing prompts for furnished room images
-using GPT-4o vision. Results are saved as a JSONL file.
+Generate furniture editing prompts for furnished room images using GPT-4o vision.
+Covers six challenging operation types designed to stress-test image-editing models:
+  MultiEdit, ColorChange, MaterialChange, Resize, LargeElement, Combination.
+Results are saved as a JSONL file with full resume support.
 
 Usage:
     conda activate data_process
     python scripts/prompt_generating.py [--dataset-root DIR] [--output FILE]
                                 [--model MODEL] [--views A2,B2]
+                                [--operations MultiEdit,ColorChange,...]
+                                [--config FILE]
                                 [--workers N] [--debug] [--debug-n N] [--seed N]
 """
 
@@ -23,12 +27,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from openai import OpenAI, RateLimitError, APIError
 from tqdm import tqdm
 
+from config_utils import load_json_config, pick_value, normalize_csv_or_list
+
 # ---------------------------------------------------------------------------
 # Defaults
 # ---------------------------------------------------------------------------
-DEFAULT_DATASET_ROOT = "/workspace/all_multiview_datasets"
-DEFAULT_OUTPUT = "/workspace/data_processing/resume/prompts.jsonl"
+DEFAULT_DATASET_ROOT = "/workspace/data/all_multiview_datasets"
+DEFAULT_OUTPUT = "/workspace/multiview-data-pipeline/resume/prompts.jsonl"
 DEFAULT_MODEL = "gpt-4o"
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "prompt_generating.json"
 # Process only these view suffixes by default (one representative per scene variant)
 DEFAULT_VIEWS = {"A2", "B2"}
 
@@ -37,38 +44,45 @@ You are an expert interior designer. You will be given a photograph of a furnish
 Your task is to generate ONE concise, specific furniture-editing instruction for image-editing purposes.
 
 Operation definitions:
-- Add:     introduce a new piece of furniture that is NOT currently present
-- Delete:  remove an existing piece of furniture that IS currently present
-- Replace: swap an existing piece of furniture for a different style or type
+- MultiEdit:      specify 2–3 simultaneous furniture edits (any mix of add/delete/replace) targeting different objects
+- ColorChange:    change the color of one or more existing furniture items or surfaces
+- MaterialChange: change the material or texture of one or more existing furniture items
+- Resize:         make one or more existing furniture items larger or smaller; mention relative scale when helpful, try to avoid too slight changes that may be ambiguous
+- LargeElement:   edit a dominant scene element such as a wall, floor, ceiling, or a large piece of furniture
+- Combination:    chain 2–3 different edit types in one instruction (e.g. resize one thing, change another's material, replace a third)
 
 Rules:
 - You MUST use the exact operation type specified in the user message.
-- Your instruction MUST be relevant to the specific room in the photo.
-- Be specific about the item (size, material, color, style when relevant).
-- Be specific about location when it aids clarity (e.g. "against the left wall").
-- Keep the prompt under 20 words.
+- Your instruction MUST reference objects or surfaces that are visible in the photo.
+- Be specific: mention color, material, size, style, and location when relevant.
+- For single-focus operations (ColorChange, MaterialChange, Resize, LargeElement): keep the prompt under 20 words.
+- For multi-focus operations (MultiEdit, Combination): keep the prompt under 40 words; separate sub-instructions with semicolons.
 - Respond ONLY with valid JSON — no explanation, no markdown.
 
 Response format:
 {"operation": "<required operation>", "prompt": "<instruction>"}
 
 Examples:
-{"operation": "Add", "prompt": "Add a queen-sized bed with a dark wooden headboard against the main wall"}
-{"operation": "Delete", "prompt": "Remove the small round bedside table on the right"}
-{"operation": "Replace", "prompt": "Replace the wooden dresser with a sleek white built-in wardrobe"}
+{"operation": "MultiEdit", "prompt": "Add a floor lamp in the corner; remove the small coffee table; replace the armchair with a velvet accent chair"}
+{"operation": "ColorChange", "prompt": "Change the sofa color from grey to deep navy blue"}
+{"operation": "ColorChange", "prompt": "Change the curtains to warm beige and the accent chair to forest green"}
+{"operation": "MaterialChange", "prompt": "Replace the wooden coffee table top with white marble"}
+{"operation": "MaterialChange", "prompt": "Change the dining chairs to velvet upholstery and the tabletop to tempered glass"}
+{"operation": "Resize", "prompt": "Scale down the oversized sectional sofa by about 20% to open up the room"}
+{"operation": "Resize", "prompt": "Make the nightstand on the left taller to align with the top of the bed frame"}
+{"operation": "LargeElement", "prompt": "Paint the accent wall behind the sofa a deep charcoal grey"}
+{"operation": "LargeElement", "prompt": "Replace the hardwood flooring with light grey large-format stone tiles"}
+{"operation": "Combination", "prompt": "Scale up the dining table slightly; change its surface to dark walnut veneer; replace the overhead pendant with a modern brass chandelier"}
+{"operation": "Combination", "prompt": "Change the sofa fabric to cognac leather; resize the coffee table to be smaller; remove the floor lamp by the window"}
 """
 
-"""
-Add and delete is good. We need more data to do replace, especially for complex scenes with multiple editing.
-
-TODO for prompts
-1. Edit multiple objects in the same image
-2. Accuracy when the object is relatively large in the scene
-3. Accuracy of color (saturation) and material details
-4. Complex operations involving multiple objects
-5. Data volume for resizing
-6. Mask dilation
-"""
+# Addressed in this revision:
+# 1. MultiEdit   — simultaneous edits on multiple objects
+# 2. LargeElement — large scene elements (walls, floors, dominant furniture)
+# 3. ColorChange / MaterialChange — color & material accuracy
+# 4. Combination  — chained multi-type instructions
+# 5. Resize       — scale up/down with consistency
+# (Mask dilation is a separate pipeline concern, not prompt-level)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -96,7 +110,9 @@ def parse_filename(filename: str) -> dict:
     }
 
 
-OPERATIONS = ["Add", "Delete", "Replace"]
+# All valid operation types for the challenging-case dataset.
+# Use --operations at runtime to target a specific subset.
+OPERATIONS = ["MultiEdit", "ColorChange", "MaterialChange", "Resize", "LargeElement", "Combination"]
 
 
 def call_gpt(client: OpenAI, image_path: Path, model: str, operation: str, retries: int = 3) -> dict:
@@ -124,7 +140,7 @@ def call_gpt(client: OpenAI, image_path: Path, model: str, operation: str, retri
                         ],
                     },
                 ],
-                max_tokens=100,
+                max_tokens=150,
                 response_format={"type": "json_object"},
                 temperature=0.8,
             )
@@ -135,7 +151,7 @@ def call_gpt(client: OpenAI, image_path: Path, model: str, operation: str, retri
             if "operation" not in parsed or "prompt" not in parsed:
                 raise ValueError(f"Unexpected JSON keys: {parsed}")
             if parsed["operation"] not in OPERATIONS:
-                raise ValueError(f"Unknown operation: {parsed['operation']}")
+                raise ValueError(f"Unknown operation '{parsed['operation']}'; expected one of {OPERATIONS}")
             # Enforce the assigned operation in case model ignored it
             parsed["operation"] = operation
             return parsed
@@ -155,21 +171,54 @@ def call_gpt(client: OpenAI, image_path: Path, model: str, operation: str, retri
 
 def main():
     parser = argparse.ArgumentParser(description="Generate furniture-editing prompts via GPT-4o vision")
-    parser.add_argument("--dataset-root", default=DEFAULT_DATASET_ROOT, help="Root directory of image dataset")
-    parser.add_argument("--output", default=DEFAULT_OUTPUT, help="Output JSONL file path")
-    parser.add_argument("--model", default=DEFAULT_MODEL, help="OpenAI model to use")
+    parser.add_argument("--config", default=None, help="Path to JSON config file (default: config/prompt_generating.json)")
+    parser.add_argument("--dataset-root", default=None, help="Root directory of image dataset")
+    parser.add_argument("--output", default=None, help="Output JSONL file path")
+    parser.add_argument("--model", default=None, help="OpenAI model to use")
     parser.add_argument(
         "--views",
-        default=",".join(sorted(DEFAULT_VIEWS)),
+        default=None,
         help="Comma-separated list of view suffixes to include (e.g. A2,B2)",
     )
-    parser.add_argument("--workers", type=int, default=4, help="Parallel API workers (default: 4)")
-    parser.add_argument("--debug", action="store_true", help="Debug mode: sample a few random images and write to a separate JSONL")
-    parser.add_argument("--debug-n", type=int, default=10, help="Number of images to sample in debug mode (default: 10)")
+    parser.add_argument(
+        "--operations",
+        default=None,
+        help="Comma-separated list of operation types to generate (default: all six challenging types)",
+    )
+    parser.add_argument("--workers", type=int, default=None, help="Parallel API workers (default: 4)")
+    parser.add_argument("--debug", action="store_true", default=None, help="Debug mode: sample a few random images and write to a separate JSONL")
+    parser.add_argument("--debug-n", type=int, default=None, help="Number of images to sample in debug mode (default: 10)")
     parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducible debug sampling")
     args = parser.parse_args()
 
+    config_path = Path(args.config) if args.config else DEFAULT_CONFIG_PATH
+    try:
+        config = load_json_config(config_path, require_exists=bool(args.config))
+    except (FileNotFoundError, ValueError, json.JSONDecodeError) as e:
+        parser.error(str(e))
+
+    args.dataset_root = pick_value(args.dataset_root, config, "dataset_root", DEFAULT_DATASET_ROOT)
+    args.output = pick_value(args.output, config, "output", DEFAULT_OUTPUT)
+    args.model = pick_value(args.model, config, "model", DEFAULT_MODEL)
+    args.views = normalize_csv_or_list(
+        pick_value(args.views, config, "views", sorted(DEFAULT_VIEWS))
+    )
+    args.operations = normalize_csv_or_list(
+        pick_value(args.operations, config, "operations", OPERATIONS)
+    )
+    args.workers = int(pick_value(args.workers, config, "workers", 4))
+    args.debug = bool(pick_value(args.debug, config, "debug", False))
+    args.debug_n = int(pick_value(args.debug_n, config, "debug_n", 10))
+    args.seed = pick_value(args.seed, config, "seed", None)
+
+    if config_path.exists():
+        print(f"Using config: {config_path}")
+
     allowed_views = set(v.strip().upper() for v in args.views.split(","))
+    active_operations = [op.strip() for op in args.operations.split(",") if op.strip()]
+    invalid_ops = [op for op in active_operations if op not in OPERATIONS]
+    if invalid_ops:
+        parser.error(f"Unknown operation(s): {invalid_ops}. Valid choices: {OPERATIONS}")
     dataset_root = Path(args.dataset_root)
     output_path = (
         Path(args.output).with_stem(Path(args.output).stem + "_debug")
@@ -215,7 +264,7 @@ def main():
 
     # Assign operations in round-robin rotation for balanced distribution
     pending_all = [img for img in images if str(img.relative_to(dataset_root)) not in processed]
-    pending = [(img, OPERATIONS[i % len(OPERATIONS)]) for i, img in enumerate(pending_all)]
+    pending = [(img, active_operations[i % len(active_operations)]) for i, img in enumerate(pending_all)]
     print(f"Total images matching filters : {len(images)}")
     print(f"Already processed             : {len(processed)}")
     print(f"Remaining                     : {len(pending)}")
