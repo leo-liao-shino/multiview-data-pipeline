@@ -167,9 +167,7 @@ python scripts/qwen_edit_test.py --config config/qwen_edit_test.json
 | `--seed N` | `42` | Random seed for sampling |
 | `--steps N` | `20` | Diffusion steps (20 = good quality/speed balance) |
 | `--cfg FLOAT` | `4.0` | `true_cfg_scale` |
-| `--model MODEL` | `Qwen/Qwen-Image-Edit-2509` | HuggingFace model ID |
-| `--width N` | `None` | Native generation width request (if pipeline supports it) |
-| `--height N` | `None` | Native generation height request (if pipeline supports it) |
+| `--model MODEL` | `Qwen/Qwen-Image-Edit-2511` | HuggingFace model ID |
 | `--int8` | ✓ (default) | 8-bit quantization: ~24 GB VRAM |
 | `--bf16` | — | Full bfloat16: ~47 GB VRAM, faster |
 | `--wandb` | off | Log compare images to Weights & Biases |
@@ -187,8 +185,8 @@ python scripts/qwen_edit_test.py --n 10 --seed 42 --wandb
 # Full bf16 (needs full 48 GB headroom)
 python scripts/qwen_edit_test.py --n 5 --bf16
 
-# Request native higher resolution (if supported by installed pipeline)
-python scripts/qwen_edit_test.py --n 1 --width 1536 --height 1536
+# Override the model explicitly if needed
+python scripts/qwen_edit_test.py --n 5 --model Qwen/Qwen-Image-Edit-2511
 ```
 
 ### Outputs
@@ -200,9 +198,8 @@ For each pair:
 
 ### Notes
 
-- Native output resolution depends on your installed Qwen/diffusers pipeline support.
-- If `--width/--height` is set and supported, the script requests that native output size.
-- If unsupported, the script logs a warning and continues with default pipeline behavior.
+- The default tested model is now `Qwen/Qwen-Image-Edit-2511`.
+- The 2511 model card recommends using the latest `diffusers` build.
 - 8-bit quantization (`--int8`) reduces VRAM from ~47 GB to ~24 GB with minimal quality impact.
 - Steps=20 was found to be visually equivalent to the model card default of 40 at half the time (~3 min/image on A6000).
 

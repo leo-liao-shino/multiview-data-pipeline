@@ -32,7 +32,7 @@ from config_utils import load_json_config, pick_value, normalize_csv_or_list
 # ---------------------------------------------------------------------------
 # Defaults
 # ---------------------------------------------------------------------------
-DEFAULT_DATASET_ROOT = "/workspace/data/all_multiview_datasets"
+DEFAULT_DATASET_ROOT = "/workspace/data/all-multiview-datasets"
 DEFAULT_OUTPUT = "/workspace/multiview-data-pipeline/resume/prompts.jsonl"
 DEFAULT_MODEL = "gpt-4o"
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "prompt_generating.json"

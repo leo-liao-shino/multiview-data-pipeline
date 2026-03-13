@@ -1,5 +1,5 @@
 {
-  "dataset_root": "/workspace/data/all_multiview_datasets",
+  "dataset_root": "/workspace/data/all-multiview-datasets",
   "output": "/workspace/multiview-data-pipeline/resume/prompts.jsonl",
   "model": "gpt-4o",
   "views": ["A2", "B2"],
