@@ -6,6 +6,7 @@ Usage:
     python scripts/qwen_edit_test.py [--jsonl FILE] [--dataset-root DIR]
                                      [--output-dir DIR] [--n N] [--seed N]
                                      [--steps N] [--cfg FLOAT]
+                                     [--config FILE]
                                      [--bf16 | --int8]
 
 Outputs per pair:
@@ -27,17 +28,20 @@ from PIL import Image, ImageDraw, ImageFont
 from diffusers.pipelines.qwenimage.pipeline_qwenimage_edit_plus import QwenImageEditPlusPipeline
 from diffusers.quantizers.pipe_quant_config import PipelineQuantizationConfig
 
+from config_utils import load_json_config, pick_value
+
 # ---------------------------------------------------------------------------
 # Defaults
 # ---------------------------------------------------------------------------
-DEFAULT_JSONL        = "/workspace/data_processing/resume/prompts_debug.jsonl"
+DEFAULT_JSONL        = "/workspace/multiview-data-pipeline/resume/prompts_debug.jsonl"
 DEFAULT_DATASET_ROOT = "/workspace/data/all_multiview_datasets"
-DEFAULT_OUTPUT_DIR   = "/workspace/data_processing/qwen_test_outputs"
+DEFAULT_OUTPUT_DIR   = "/workspace/data/qwen_test_outputs"
 DEFAULT_N            = 5
 DEFAULT_SEED         = 42
 DEFAULT_STEPS        = 20
 DEFAULT_CFG          = 4.0   # true_cfg_scale recommended in model card
 DEFAULT_MODEL        = "Qwen/Qwen-Image-Edit-2509"
+DEFAULT_CONFIG_PATH  = Path(__file__).resolve().parents[1] / "config" / "qwen_edit_test.json"
 
 
 # ---------------------------------------------------------------------------
@@ -148,23 +152,53 @@ def run_pair(pipe: QwenImageEditPlusPipeline,
 
 def parse_args():
     p = argparse.ArgumentParser(description="Test Qwen-Image-Edit on sample pairs")
-    p.add_argument("--jsonl",         default=DEFAULT_JSONL,        help="Path to prompts JSONL")
-    p.add_argument("--dataset-root",  default=DEFAULT_DATASET_ROOT, help="Dataset root directory")
-    p.add_argument("--output-dir",    default=DEFAULT_OUTPUT_DIR,   help="Where to save outputs")
-    p.add_argument("--n",             type=int,   default=DEFAULT_N,     help="Number of pairs to test")
-    p.add_argument("--seed",          type=int,   default=DEFAULT_SEED,  help="Random seed")
-    p.add_argument("--steps",         type=int,   default=DEFAULT_STEPS, help="Inference steps (default: 20)")
-    p.add_argument("--cfg",           type=float, default=DEFAULT_CFG,   help="true_cfg_scale")
-    p.add_argument("--model",         default=DEFAULT_MODEL,             help="Model ID")
+    p.add_argument("--config",        default=None,                     help="Path to JSON config file (default: config/qwen_edit_test.json)")
+    p.add_argument("--jsonl",         default=None,                     help="Path to prompts JSONL")
+    p.add_argument("--dataset-root",  default=None,                     help="Dataset root directory")
+    p.add_argument("--output-dir",    default=None,                     help="Where to save outputs")
+    p.add_argument("--n",             type=int,   default=None,         help="Number of pairs to test")
+    p.add_argument("--seed",          type=int,   default=None,         help="Random seed")
+    p.add_argument("--steps",         type=int,   default=None,         help="Inference steps (default: 20)")
+    p.add_argument("--cfg",           type=float, default=None,         help="true_cfg_scale")
+    p.add_argument("--model",         default=None,                     help="Model ID")
+    p.add_argument("--precision",     choices=["int8", "bf16"], default=None,
+                   help="Precision mode: int8 or bf16")
     prec = p.add_mutually_exclusive_group()
     prec.add_argument("--int8", dest="precision", action="store_const", const="int8",
                       help="8-bit quantization: ~24 GB VRAM, slower (default)")
     prec.add_argument("--bf16", dest="precision", action="store_const", const="bf16",
                       help="Full bfloat16: ~47 GB VRAM, faster")
-    p.set_defaults(precision="int8")
-    p.add_argument("--wandb",         action="store_true",               help="Log results to Weights & Biases")
-    p.add_argument("--wandb-project", default="qwen-furniture-edit",     help="W&B project name")
-    return p.parse_args()
+    p.set_defaults(precision=None)
+    p.add_argument("--wandb",         action="store_true", default=None,  help="Log results to Weights & Biases")
+    p.add_argument("--wandb-project", default=None,                        help="W&B project name")
+
+    args = p.parse_args()
+
+    config_path = Path(args.config) if args.config else DEFAULT_CONFIG_PATH
+    try:
+        config = load_json_config(config_path, require_exists=bool(args.config))
+    except (FileNotFoundError, ValueError, json.JSONDecodeError) as e:
+        p.error(str(e))
+
+    args.jsonl = pick_value(args.jsonl, config, "jsonl", DEFAULT_JSONL)
+    args.dataset_root = pick_value(args.dataset_root, config, "dataset_root", DEFAULT_DATASET_ROOT)
+    args.output_dir = pick_value(args.output_dir, config, "output_dir", DEFAULT_OUTPUT_DIR)
+    args.n = int(pick_value(args.n, config, "n", DEFAULT_N))
+    args.seed = int(pick_value(args.seed, config, "seed", DEFAULT_SEED))
+    args.steps = int(pick_value(args.steps, config, "steps", DEFAULT_STEPS))
+    args.cfg = float(pick_value(args.cfg, config, "cfg", DEFAULT_CFG))
+    args.model = pick_value(args.model, config, "model", DEFAULT_MODEL)
+    args.precision = pick_value(args.precision, config, "precision", "int8")
+    args.wandb = bool(pick_value(args.wandb, config, "wandb", False))
+    args.wandb_project = pick_value(args.wandb_project, config, "wandb_project", "qwen-furniture-edit")
+
+    if args.precision not in {"int8", "bf16"}:
+        p.error("precision must be one of: int8, bf16")
+
+    if config_path.exists():
+        print(f"Using config: {config_path}")
+
+    return args
 
 
 def main():
@@ -202,7 +236,7 @@ def main():
         )
 
     results_path = output_dir / "results.jsonl"
-    with open(results_path, "a") as out_f:
+    with open(results_path, "w") as out_f: # overwrite if exists
         for i, record in enumerate(sample, 1):
             print(f"[{i}/{len(sample)}] {record['image_path']}")
             result = run_pair(pipe, record, args.dataset_root,
