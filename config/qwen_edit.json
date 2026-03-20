@@ -1,0 +1,17 @@
+{
+  "jsonl": "/workspace/multiview-data-pipeline/resume/prompts.jsonl",
+  "dataset_root": "/workspace/data/all-multiview-datasets",
+  "output_dir": "/workspace/data/qwen-outputs",
+  "seed": 42,
+  "steps": 20,
+  "cfg": 4.0,
+  "model": "Qwen/Qwen-Image-Edit-2511",
+  "preserve_untouched": true,
+  "preserve_suffix": " Only edit the requested target. Keep all other regions of the image unchanged.",
+  "precision": "bf16",
+  "match_input_resolution": true,
+  "max_megapixels": null,
+  "limit": null,
+  "wandb": false,
+  "wandb_project": "qwen-furniture-edit"
+}
