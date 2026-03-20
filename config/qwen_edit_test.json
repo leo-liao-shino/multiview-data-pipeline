@@ -6,10 +6,35 @@
   "seed": 42,
   "steps": 20,
   "cfg": 4.0,
+  "guidance_scale": 1.0,
   "model": "Qwen/Qwen-Image-Edit-2511",
+  "scheduler": "default",
+  "negative_prompt": " ",
+  "prompt_prefix": "",
+  "prompt_case": "none",
+  "prompt_max_chars": null,
   "preserve_untouched": true,
   "preserve_suffix": " Only edit the requested target. Keep all other objects, textures, lighting, geometry, and background unchanged.",
   "precision": "bf16",
+  "match_input_resolution": true,
   "wandb": false,
-  "wandb_project": "qwen-furniture-edit"
+  "wandb_project": "qwen-furniture-edit",
+  "sweep_enabled": false,
+  "sweep_limit": null,
+  "sweep": {
+    "enabled": false,
+    "scheduler": [
+      "default",
+      "flowmatch_euler",
+      "flowmatch_euler_karras",
+      "flowmatch_lcm"
+    ],
+    "steps": [8, 20, 30],
+    "cfg": [1.0, 3.0, 4.0, 5.0],
+    "guidance_scale": [1.0],
+    "negative_prompt": [" ", "blurry, low quality, distorted geometry, changed background"],
+    "prompt_prefix": [""],
+    "prompt_case": ["none"],
+    "prompt_max_chars": [null]
+  }
 }
