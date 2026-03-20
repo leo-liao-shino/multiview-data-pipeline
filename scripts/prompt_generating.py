@@ -1,7 +1,7 @@
 """
 Generate furniture editing prompts for furnished room images using GPT-4o vision.
-Covers six challenging operation types designed to stress-test image-editing models:
-  MultiEdit, ColorChange, MaterialChange, Resize, LargeElement, Combination.
+Covers eight challenging operation types designed to stress-test image-editing models:
+  MultiEdit, ColorChange, MaterialChange, Resize, LargeElement, Combination, Move, Rotation.
 Results are saved as a JSONL file with full resume support.
 
 Usage:
@@ -11,6 +11,7 @@ Usage:
                                 [--operations MultiEdit,ColorChange,...]
                                 [--config FILE]
                                 [--workers N] [--debug] [--debug-n N] [--seed N]
+                                [--append] [--append-n N]
 """
 
 import os
@@ -50,12 +51,14 @@ Operation definitions:
 - Resize:         make one or more existing furniture items larger or smaller; mention relative scale when helpful, try to avoid too slight changes that may be ambiguous
 - LargeElement:   edit a dominant scene element such as a wall, floor, ceiling, or a large piece of furniture
 - Combination:    chain 2–3 different edit types in one instruction (e.g. resize one thing, change another's material, replace a third)
+- Move:           relocate one existing furniture item to a different position within the room; specify the destination clearly (e.g. against a wall, to a corner, centered under the window)
+- Rotation:       rotate one existing furniture item in place; specify the object and the degree or direction of rotation (e.g. 90 degrees clockwise, face toward the window)
 
 Rules:
 - You MUST use the exact operation type specified in the user message.
 - Your instruction MUST reference objects or surfaces that are visible in the photo.
 - Be specific: mention color, material, size, style, and location when relevant.
-- For single-focus operations (ColorChange, MaterialChange, Resize, LargeElement): keep the prompt under 20 words.
+- For single-focus operations (ColorChange, MaterialChange, Resize, LargeElement, Move, Rotation): keep the prompt under 20 words.
 - For multi-focus operations (MultiEdit, Combination): keep the prompt under 40 words; separate sub-instructions with semicolons.
 - Respond ONLY with valid JSON — no explanation, no markdown.
 
@@ -74,15 +77,16 @@ Examples:
 {"operation": "LargeElement", "prompt": "Replace the hardwood flooring with light grey large-format stone tiles"}
 {"operation": "Combination", "prompt": "Scale up the dining table slightly; change its surface to dark walnut veneer; replace the overhead pendant with a modern brass chandelier"}
 {"operation": "Combination", "prompt": "Change the sofa fabric to cognac leather; resize the coffee table to be smaller; remove the floor lamp by the window"}
+{"operation": "Move", "prompt": "Move the armchair from the corner to face the fireplace directly"}
+{"operation": "Move", "prompt": "Slide the coffee table closer to the sofa, centering it in front of the cushions"}
+{"operation": "Rotation", "prompt": "Rotate the bed 90 degrees so the headboard is against the left wall"}
+{"operation": "Rotation", "prompt": "Turn the accent chair to face the window instead of the television"}
 """
 
-# Addressed in this revision:
-# 1. MultiEdit   — simultaneous edits on multiple objects
-# 2. LargeElement — large scene elements (walls, floors, dominant furniture)
-# 3. ColorChange / MaterialChange — color & material accuracy
-# 4. Combination  — chained multi-type instructions
-# 5. Resize       — scale up/down with consistency
-# (Mask dilation is a separate pipeline concern, not prompt-level)
+# All valid operation types for the challenging-case dataset.
+# Use --operations at runtime to target a specific subset.
+OPERATIONS = ["MultiEdit", "ColorChange", "MaterialChange", "Resize", "LargeElement", "Combination", "Move", "Rotation"]
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -108,11 +112,6 @@ def parse_filename(filename: str) -> dict:
         "variant": m.group(3),
         "view": m.group(4),
     }
-
-
-# All valid operation types for the challenging-case dataset.
-# Use --operations at runtime to target a specific subset.
-OPERATIONS = ["MultiEdit", "ColorChange", "MaterialChange", "Resize", "LargeElement", "Combination"]
 
 
 def call_gpt(client: OpenAI, image_path: Path, model: str, operation: str, retries: int = 3) -> dict:
@@ -183,12 +182,34 @@ def main():
     parser.add_argument(
         "--operations",
         default=None,
-        help="Comma-separated list of operation types to generate (default: all six challenging types)",
+        help="Comma-separated list of operation types to generate (default: all eight types)",
     )
     parser.add_argument("--workers", type=int, default=None, help="Parallel API workers (default: 4)")
     parser.add_argument("--debug", action="store_true", default=None, help="Debug mode: sample a few random images and write to a separate JSONL")
     parser.add_argument("--debug-n", type=int, default=None, help="Number of images to sample in debug mode (default: 10)")
     parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducible debug sampling")
+    # ------------------------------------------------------------------
+    # Append mode: generate new operations over already-processed images
+    # ------------------------------------------------------------------
+    parser.add_argument(
+        "--append",
+        action="store_true",
+        default=False,
+        help=(
+            "Append mode: sample images from the existing output JSONL and generate "
+            "prompts only for the operations specified via --operations (e.g. Move,Rotation). "
+            "No images are re-processed for operations they already have."
+        ),
+    )
+    parser.add_argument(
+        "--append-n",
+        type=int,
+        default=None,
+        help=(
+            "How many images to sample per new operation in append mode. "
+            "Defaults to the total number of unique images already in the JSONL."
+        ),
+    )
     args = parser.parse_args()
 
     config_path = Path(args.config) if args.config else DEFAULT_CONFIG_PATH
@@ -214,11 +235,11 @@ def main():
     if config_path.exists():
         print(f"Using config: {config_path}")
 
-    allowed_views = set(v.strip().upper() for v in args.views.split(","))
     active_operations = [op.strip() for op in args.operations.split(",") if op.strip()]
     invalid_ops = [op for op in active_operations if op not in OPERATIONS]
     if invalid_ops:
         parser.error(f"Unknown operation(s): {invalid_ops}. Valid choices: {OPERATIONS}")
+
     dataset_root = Path(args.dataset_root)
     output_path = (
         Path(args.output).with_stem(Path(args.output).stem + "_debug")
@@ -226,53 +247,112 @@ def main():
         else Path(args.output)
     )
 
-    # Collect image files filtered by view suffix
-    all_images = sorted(dataset_root.rglob("*.jpg"))
-    images = []
-    for img in all_images:
-        meta = parse_filename(img.name)
-        if not meta:
-            continue
-        view_key = meta["variant"] + meta["view"]
-        if view_key in allowed_views:
-            images.append(img)
-
-    if not images:
-        print(f"No images found under {dataset_root} matching views {allowed_views}")
-        return
-
-    if args.debug:
-        if args.seed is not None:
-            random.seed(args.seed)
-        n = min(args.debug_n, len(images))
-        images = random.sample(images, n)
-        # Always start fresh in debug mode
-        if output_path.exists():
-            output_path.unlink()
-        print(f"[DEBUG] Sampled {n} random images (seed={args.seed}) → output: {output_path}")
-
-    # Load already-processed paths for resume support
-    processed: set[str] = set()
     write_lock = threading.Lock()
-    if output_path.exists():
+
+    # ------------------------------------------------------------------
+    # APPEND MODE — sample from existing JSONL, skip already-done pairs
+    # ------------------------------------------------------------------
+    if args.append:
+        if not output_path.exists():
+            parser.error(f"--append requires an existing output file, but {output_path} was not found.")
+
+        # Read existing records: build set of (image_path, operation) already done
+        existing_records: list[dict] = []
+        done_pairs: set[tuple[str, str]] = set()
         with open(output_path, "r") as f:
             for line in f:
+                line = line.strip()
+                if not line:
+                    continue
                 try:
-                    processed.add(json.loads(line)["image_path"])
+                    rec = json.loads(line)
+                    existing_records.append(rec)
+                    done_pairs.add((rec["image_path"], rec["operation"]))
                 except (json.JSONDecodeError, KeyError):
                     pass
 
-    # Assign operations in round-robin rotation for balanced distribution
-    pending_all = [img for img in images if str(img.relative_to(dataset_root)) not in processed]
-    pending = [(img, active_operations[i % len(active_operations)]) for i, img in enumerate(pending_all)]
-    print(f"Total images matching filters : {len(images)}")
-    print(f"Already processed             : {len(processed)}")
-    print(f"Remaining                     : {len(pending)}")
+        # Pool of unique image paths already in the JSONL
+        all_existing_paths = list(dict.fromkeys(r["image_path"] for r in existing_records))
+        print(f"Unique images in existing JSONL : {len(all_existing_paths)}")
 
-    if not pending:
-        print("Nothing to do.")
-        return
+        if args.seed is not None:
+            random.seed(args.seed)
 
+        # For each new operation, sample up to append_n images that don't already
+        # have that operation, then schedule them.
+        append_n = args.append_n  # may be None → use all eligible
+        pending: list[tuple[Path, str]] = []
+        for op in active_operations:
+            eligible = [p for p in all_existing_paths if (p, op) not in done_pairs]
+            if not eligible:
+                print(f"  [{op}] No eligible images to process (all already done).")
+                continue
+            n = min(append_n, len(eligible)) if append_n is not None else len(eligible)
+            sampled = random.sample(eligible, n)
+            print(f"  [{op}] Scheduling {n} images (out of {len(eligible)} eligible).")
+            for rel in sampled:
+                pending.append((dataset_root / rel, op))
+
+        print(f"\nTotal new (image, operation) pairs to generate : {len(pending)}")
+        if not pending:
+            print("Nothing to do.")
+            return
+
+        # Shuffle so operations are interleaved (friendlier for rate-limit retries)
+        random.shuffle(pending)
+
+    # ------------------------------------------------------------------
+    # NORMAL MODE — scan filesystem, round-robin over operations
+    # ------------------------------------------------------------------
+    else:
+        allowed_views = set(v.strip().upper() for v in args.views.split(","))
+
+        all_images = sorted(dataset_root.rglob("*.jpg"))
+        images = []
+        for img in all_images:
+            meta = parse_filename(img.name)
+            if not meta:
+                continue
+            view_key = meta["variant"] + meta["view"]
+            if view_key in allowed_views:
+                images.append(img)
+
+        if not images:
+            print(f"No images found under {dataset_root} matching views {allowed_views}")
+            return
+
+        if args.debug:
+            if args.seed is not None:
+                random.seed(args.seed)
+            n = min(args.debug_n, len(images))
+            images = random.sample(images, n)
+            if output_path.exists():
+                output_path.unlink()
+            print(f"[DEBUG] Sampled {n} random images (seed={args.seed}) → output: {output_path}")
+
+        # Load already-processed paths for resume support
+        processed: set[str] = set()
+        if output_path.exists():
+            with open(output_path, "r") as f:
+                for line in f:
+                    try:
+                        processed.add(json.loads(line)["image_path"])
+                    except (json.JSONDecodeError, KeyError):
+                        pass
+
+        pending_all = [img for img in images if str(img.relative_to(dataset_root)) not in processed]
+        pending = [(img, active_operations[i % len(active_operations)]) for i, img in enumerate(pending_all)]
+        print(f"Total images matching filters : {len(images)}")
+        print(f"Already processed             : {len(processed)}")
+        print(f"Remaining                     : {len(pending)}")
+
+        if not pending:
+            print("Nothing to do.")
+            return
+
+    # ------------------------------------------------------------------
+    # Shared processing logic
+    # ------------------------------------------------------------------
     client = OpenAI()
     errors: list[str] = []
 
@@ -307,8 +387,6 @@ def main():
                 if err:
                     errors.append(f"{rel}: {err}")
                     tqdm.write(f"[ERROR] {rel}: {err}")
-                # else:
-                #     tqdm.write(f"[OK] {rel}")
                 pbar.update(1)
 
     print(f"\nDone. Output: {output_path}")
