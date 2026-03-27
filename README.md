@@ -401,3 +401,17 @@ PYTHONPATH=$(pwd) python ../scripts/generate_edit_masks.py \
 | `--box_threshold` | `0.30` | GroundingDINO confidence threshold (lower = more detections) |
 | `--diff_refine` | off | Intersect SAM mask with pixel diff to suppress false positives |
 | `--limit` | None | Process only first N records (for testing) |
+
+# Post Processing Pipelie
+## Selection
+Run in local machine to enbale GUI. Either mount directory with `sshfs` or download with `rclone copy`. 
+```bash
+python scripts/image_selections.py --images /path/to/images --meta /path/to/jsonl --out /path/to/outs
+```
+
+## Checking
+Check those being accpeted. 
+```bash
+python scripts/show_image path/to/outs --base /path/to/local/dir --cache 8
+```
+Caching applied for lazy loading. 
