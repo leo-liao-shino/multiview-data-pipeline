@@ -2,7 +2,7 @@
 
 ## Getting Started
 
-Run `setup.sh` to setup conda env.
+Run `setup.sh` to setup conda env. Run `setup-dataset.sh` to download datasets. 
 
 ## Config-Driven Runs
 
