@@ -38,3 +38,43 @@ else
 
   echo "✓ multiview-qwen-edit ready at /workspace/data/multiview-qwen-edit "
 fi
+
+if [[ -d /workspace/data/edit_new ]]; then
+  echo "Dataset edit_new already exists at /workspace/data/edit_new, skipping sync."
+  exit 0
+else
+  echo "Syncing edit_new from R2..."
+  mkdir -p /workspace/data
+
+  rclone sync r2:lawrence-multiview-datasets/edit_new /workspace/data/edit_new \
+    --progress \
+    --transfers 32 \
+    --checkers 16 \
+    --fast-list \
+    --buffer-size 512M \
+    --s3-chunk-size 64M \
+    --retries 5 \
+    --retries-sleep 2s
+
+  echo "✓ edit_new ready at /workspace/data/edit_new "
+fi
+
+if [[ -d /workspace/data/editing_v3 ]]; then
+  echo "Dataset editing_v3 already exists at /workspace/data/editing_v3, skipping sync."
+  exit 0
+else
+  echo "Syncing editing_v3 from R2..."
+  mkdir -p /workspace/data
+
+  rclone sync r2:lawrence-multiview-datasets/editing_v3 /workspace/data/editing_v3 \
+    --progress \
+    --transfers 32 \
+    --checkers 16 \
+    --fast-list \
+    --buffer-size 512M \
+    --s3-chunk-size 64M \
+    --retries 5 \
+    --retries-sleep 2s
+
+  echo "✓ editing_v3 ready at /workspace/data/editing_v3 "
+fi
