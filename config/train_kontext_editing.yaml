@@ -1,0 +1,74 @@
+---
+job: extension
+config:
+  name: "kontext_editing_unified_v1"
+  process:
+    - type: 'sd_trainer'
+      training_folder: "output"
+      performance_log_every: 1000
+      device: cuda:0
+      network:
+        type: "lora"
+        linear: 128
+        linear_alpha: 128
+      save:
+        dtype: float16
+        save_every: 100
+        max_step_saves_to_keep: 50
+        push_to_hub: false
+      logging:
+        log_every: 1
+        use_wandb: true
+        project_name: "flux-kontext-editing-lora"
+        run_name: "kontext_editing_unified_v1"
+      datasets:
+        - dataset_path: "/workspace/data/kontext_unified/dataset.json"
+          control_path: [
+            "/workspace/data/kontext_unified/control",
+            "/workspace/data/kontext_unified/masks"
+          ]
+          control_image_type: ["IMAGE", "MASK"]
+          full_size_control_images: true
+          control_scale_factor: [1, 0.5]
+          control_scale_method: ["lanczos", "nearest"]
+          control_stride: 16
+          normalized_control_position_embedding: true
+          control_stack_dimension: "time"
+          caption_ext: "txt"
+          to_random_sample_caption: true
+          cache_latents_to_disk: true
+          resolution: [1024]
+          to_preset_loss_weight: true
+      train:
+        batch_size: 2
+        steps: 20000
+        gradient_accumulation_steps: 2
+        train_unet: true
+        train_text_encoder: false
+        gradient_checkpointing: true
+        noise_scheduler: "flowmatch"
+        optimizer: "adamw"
+        lr: 5e-5
+        timestep_type: "linear"
+        skip_first_sample: false
+        dtype: bf16
+      model:
+        name_or_path: "black-forest-labs/FLUX.1-Kontext-dev"
+        arch: "flux_kontext"
+        quantize: false
+      sample:
+        sampler: "flowmatch"
+        sample_every: 100
+        prompts:
+          - "Replace the existing beige wooden bench with a forest green bench.  --ctrl_img /workspace/data/kontext_unified/control/000000.jpg;/workspace/data/kontext_unified/masks/000000.png --ctrl_scale_factor 1;0.5 --ctrl_scale_method lanczos;nearest --norm_ctrl_pe true --ctrl_stack_dim time --h 1024 --w 1024"
+          - "Remove the lamp  --ctrl_img /workspace/data/kontext_unified/control/000500.jpg;/workspace/data/kontext_unified/masks/000500.png --ctrl_scale_factor 1;0.5 --ctrl_scale_method lanczos;nearest --norm_ctrl_pe true --ctrl_stack_dim time --h 1024 --w 1024"
+          - "replace it with a chair  --ctrl_img /workspace/data/kontext_unified/control/001000.jpg;/workspace/data/kontext_unified/masks/001000.png --ctrl_scale_factor 1;0.5 --ctrl_scale_method lanczos;nearest --norm_ctrl_pe true --ctrl_stack_dim time --h 1024 --w 1024"
+        neg: ""
+        seed: 42
+        walk_seed: false
+        guidance_scale: 4
+        sample_steps: 20
+        concat_cond_image: true
+meta:
+  name: "[name]"
+  version: '1.0'
