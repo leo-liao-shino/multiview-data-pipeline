@@ -1,7 +1,7 @@
 """
 generate_edit_masks.py
 
-Pipeline: Qwen2.5-VL (local) → GroundingDINO → SAM 2 → dilated binary masks
+Pipeline: Qwen3-VL (local) → GroundingDINO → SAM 2 → dilated binary masks
 
 Must be run from inside the Grounded-SAM-2 repo directory:
     cd /workspace/multiview-data-pipeline/Grounded-SAM-2
@@ -11,13 +11,13 @@ Must be run from inside the Grounded-SAM-2 repo directory:
         --jsonl /workspace/data/qwen-output/results.jsonl \
         --image_root /workspace/data/all-multiview-datasets \
         --output_dir /workspace/data/masks \
-        --vlm_model Qwen/Qwen2.5-VL-72B-Instruct \
+        --vlm_model Qwen/Qwen3-VL-8B-Instruct \
         --device cuda \
         --expand_pixels 30 \
         --limit 5
 
 Dependencies (on top of Grounded-SAM-2 env):
-    pip install transformers==4.36.2  (already pinned)
+    pip install transformers>=4.49.0
     pip install qwen-vl-utils
     pip install accelerate
 """
@@ -37,7 +37,7 @@ from tqdm import tqdm
 
 
 # ─────────────────────────────────────────────────────────────
-# 1. Qwen2.5-VL — local VLM for grounding phrase extraction
+# 1. Qwen3-VL — local VLM for grounding phrase extraction
 # ─────────────────────────────────────────────────────────────
 
 VLM_SYSTEM = """You are a computer vision assistant helping localize edits in image pairs.
@@ -66,9 +66,9 @@ VLM_USER_TMPL = 'Edit instruction: "{prompt}"\nBEFORE image is first, AFTER imag
 
 
 def load_vlm(model_name: str, device: str):
-    """Load Qwen2.5-VL model and processor."""
+    """Load Qwen3-VL model and processor."""
     try:
-        from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
+        from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
     except ImportError:
         sys.exit("Install transformers >= 4.49: pip install -U transformers")
 
@@ -78,7 +78,7 @@ def load_vlm(model_name: str, device: str):
         sys.exit("Install qwen-vl-utils: pip install qwen-vl-utils")
 
     print(f"  Loading {model_name} ...")
-    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+    model = Qwen3VLForConditionalGeneration.from_pretrained(
         model_name,
         torch_dtype=torch.bfloat16,   # change from float16 to bfloat16
         device_map="auto",
@@ -98,7 +98,7 @@ def call_vlm(
     max_pixels: int = 1280 * 720,
 ) -> dict:
     """
-    Run Qwen2.5-VL on both images + edit prompt.
+    Run Qwen3-VL on both images + edit prompt.
     Returns {"changed_regions": [...], "change_type": "local"|"global"}.
     """
     from qwen_vl_utils import process_vision_info
@@ -386,7 +386,11 @@ def process_record(
     box_threshold: float,
     text_threshold: float,
 ) -> dict:
-    before_path = os.path.join(image_root, record["image_path"])
+    # Support both old format (image_root + image_path) and new format (before_path)
+    if "before_path" in record:
+        before_path = record["before_path"]
+    else:
+        before_path = os.path.join(image_root, record["image_path"])
     after_path  = record["output_path"]
     operation   = record["operation"]
     prompt      = record["prompt"]
@@ -499,15 +503,16 @@ def parse_args():
         description="Generate before/after change masks for paired edited room images"
     )
     p.add_argument("--jsonl",           required=True)
-    p.add_argument("--image_root",      required=True)
+    p.add_argument("--image_root",      default="",
+                   help="Root dir for image_path field (not needed if JSONL has before_path)")
     p.add_argument("--output_dir",      required=True)
     p.add_argument("--sam2_checkpoint", default="checkpoints/sam2.1_hiera_large.pt")
     p.add_argument("--sam2_config",     default="configs/sam2.1/sam2.1_hiera_l.yaml")
     p.add_argument("--gdino_config",
                    default="grounding_dino/groundingdino/config/GroundingDINO_SwinT_OGC.py")
     p.add_argument("--gdino_weights",   default="gdino_checkpoints/groundingdino_swint_ogc.pth")
-    p.add_argument("--vlm_model",       default="Qwen/Qwen2.5-VL-72B-Instruct",
-                   help="HuggingFace model ID or local path for Qwen2.5-VL")
+    p.add_argument("--vlm_model",       default="Qwen/Qwen3-VL-8B-Instruct",
+                   help="HuggingFace model ID or local path for Qwen3-VL")
     p.add_argument("--no_vlm",          action="store_true",
                    help="Skip VLM and use regex parser only")
     p.add_argument("--device",          default="cuda")
@@ -532,7 +537,7 @@ def main():
     # Load VLM
     vlm_model, vlm_processor = None, None
     if use_vlm:
-        print("Loading Qwen2.5-VL...")
+        print("Loading Qwen3-VL...")
         vlm_model, vlm_processor = load_vlm(args.vlm_model, args.device)
 
     # Load GroundingDINO
